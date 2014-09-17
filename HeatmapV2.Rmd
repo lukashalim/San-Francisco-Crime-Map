@@ -1,0 +1,124 @@
+San Fransicso Crime Data Analysis
+-----------------------------------------------------------
+
+## Loading Libraries and Data
+```{r global_options, include=FALSE}
+opts_chunk$set(warning=FALSE, message=FALSE)
+```
+
+```{r includefiles}
+library(ggmap)
+library(mapproj)
+library(plyr)
+```
+
+Get Map of SF
+```{r loadmap}
+sf = c(lon = -122.4167, lat = 37.7833)
+sf.map = get_map(location = sf, zoom = 12, color = "color")
+SF_MAP <- ggmap(sf.map,extent = "panel",maprange=FALSE)
+SF_MAP
+```
+
+Load crime data
+```{r Load Crime Data}
+SFPD_Incidents <- read.csv("C:/Users/LukasHalim/Documents/Dropbox/Leada/SFPD_Incidents.csv")
+```
+
+Subset to look at just violent crimes
+```{r Select Violent Crimes}
+violent_crime_types <- c('ARSON','SUICIDE','ASSAULT','SEX OFFENSES, FORCIBLE','ROBBERY')
+violent_crimes <- subset(SFPD_Incidents,Category %in% violent_crime_types)
+coordinates <- violent_crimes
+```
+
+Loading Shapefile using code found in tutorial: http://www.r-bloggers.com/shapefile-polygons-plotted-on-google-maps-using-ggmap-in-r-throw-some-throw-some-stats-on-that-mappart-2/
+```{r Load Districts}
+library(rgdal)
+PD_Districts <- readOGR("C:\\Users\\LukasHalim\\Documents\\Dropbox\\Leada\\sfpd_districts","sfpd_districts")
+PD_Districts_df <- fortify(spTransform(PD_Districts, CRS("+proj=longlat +datum=WGS84")))
+```
+
+Retreiving the center of each district so that the district name can be placed there.
+Had difficulty retrieving latitude and longitude of shapefile centers. Explanation found here: http://stackoverflow.com/questions/16462290/obtaining-latitude-and-longitude-with-from-spatial-objects-in-r
+```{r Label District Centers}
+centers <- coordinates(spTransform(PD_Districts, CRS("+proj=longlat +datum=WGS84")))
+DistrictCenters <- cbind(PD_Districts@data,centers[, 1],centers[, 2])
+DistrictCenters <- rename(DistrictCenters,c("centers[, 1]"="long","centers[, 2]"="lat"))
+SF_MAP <- SF_MAP + geom_text(data = DistrictCenters, aes(x = long, y = lat, label = DISTRICT, group = NULL), size = 2.5)
+SF_MAP <- SF_MAP + geom_polygon(aes(x=long, y=lat,group=group), fill='grey', size=.2,color='black', data=PD_Districts_df, alpha=0)
+```
+
+## Display Map with police districts from shapefile overlayed
+```{r Display Map with Districts}
+SF_MAP
+```
+
+Get the areas for each PD District
+Total area is about 45 square miles... pretty close to the figure given on wikipedia
+```{r Get area in square miles by district}
+PD_Areas <- sapply(1:10,function(x)(PD_Districts@polygons[[x]]@area)) / 27878400
+sum(PD_Areas)
+```
+
+Divide violent crimes by square mile
+```{r}
+violent_crimes_per_sq_mi <- prop.table(table(violent_crimes$PdDistrict) / PD_Areas)
+violent_crimes_per_sq_mi <- cbind(violent_crimes_per_sq_mi=as.vector(violent_crimes_per_sq_mi),id=0:9)
+
+PD_Districts_df <- merge(PD_Districts_df,violent_crimes_per_sq_mi,by=c("id"))
+SF_MAP <- SF_MAP + geom_polygon(aes(x=long, y=lat,group=group,alpha=as.factor(violent_crimes_per_sq_mi)),size=.1,fill='red',color='black', data=PD_Districts_df) 
+SF_MAP <- SF_MAP + theme(strip.background=element_blank(),
+                         strip.text.y=element_blank(),
+                         legend.text=element_blank(),
+                         legend.title=element_blank(),
+                         legend.position="none")
+```
+
+## Display map with higest density of violent crimes shown in red by district
+```{r}
+SF_MAP
+```
+
+## Crimes by Date/Time
+Friday looks a bit higher than other nights of the week
+```{r Crimes variation over time}
+SFPD_Incidents$DayOfWeek <- factor(SFPD_Incidents$DayOfWeek,c("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"))
+plot(table(SFPD_Incidents$DayOfWeek),"o")
+```
+
+```{r By Date}
+by_date <- table(SFPD_Incidents$Date)
+#Very steep drop towards the end of the month. Perhaps the data is incomplete - such a large decline needs some explanation
+plot(by_date,type="o")
+```
+
+### Fewest crimes around 4-6 AM. Most crimes around 6-7 PM.
+```{r By Time}
+by_hour <- table(substring(SFPD_Incidents$Time,1,2))
+plot(by_hour,type="o")
+```
+
+### Show crime frequency by category (For crimes with frequency > 1%)
+```{r Crimes By Type}
+crimes <- as.data.frame(table(SFPD_Incidents$Category))
+crimes <- crimes[crimes$Freq > nrow(SFPD_Incidents) / 200,]
+crimes$Var1<- with(crimes, factor(crimes$Var1, levels=crimes[order(-Freq), ]$Var1))
+ggplot(crimes, aes(x = factor(Var1), y = Freq)) + geom_bar(stat = "identity") + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+### No resolution most frequent in Bayview and Tenderloin
+```{r Crimes with/without resolution}
+prop.table(table(SFPD_Incidents$PdDistrict,SFPD_Incidents$Resolution=="NONE"),1)*100
+```
+
+## Show crime maps by category (for high frequency crime categories)
+```{r Contour Plot for each most frequent crime types}
+for(i in unique(crimes$Var1)) {
+  print(i)
+  crime_subset <- SFPD_Incidents[SFPD_Incidents$Category==i,]
+  print(ggmap(sf.map,extent = "panel", baselayer=ggplot(aes(x=X,y=Y),data=crime_subset),maprange=FALSE) +  stat_density2d(aes(x = X, y = Y, fill = ..level.., 
+  alpha = ..level..), size = 1, bins = 25, data = crime_subset, geom = "polygon") + 
+  scale_alpha(range = c(0.5, 0.75), guide = FALSE) + scale_fill_gradient(limits = c(0, 300)))
+}
+```
